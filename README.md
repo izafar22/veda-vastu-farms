@@ -23,3 +23,11 @@ npm run build
 
 - Google Maps is embedded through Google Maps web URLs; the site also provides direct Google Maps handoff buttons.
 - Verify all project claims, pricing, availability, legal/title information and infrastructure timelines before public launch.
+
+## Premium ArchViz V8
+
+The embedded masterplan now includes a Blender-ready GLB asset layer and a premium architectural-visualization pass while preserving the approved PDF-derived geometry and interactions. See `ARCHVIZ-V8-NOTES.md` and `public/masterplan3d/models/README.md`.
+
+
+## V8 masterplan visual pass
+See `ARCHVIZ-V8-MILESTONES-4-13.md` for the premium roads, landscaping, Central Park, entrance arrival, plot surfaces, lighting, context, cinematic cameras, rendering and viewer-UI changes.

@@ -13,15 +13,22 @@
     @media(max-width:560px){.topbar{padding:9px}.brand strong{font-size:13px}.toolbar{gap:5px}.btn{font-size:12px;padding:7px 9px;min-height:34px}.sidebar{max-height:38%}.fallback img{width:94%}}
   
     .dim-note{margin-top:8px;color:#82998a;font-size:11px;line-height:1.4}
+
+    .topbar{box-shadow:0 10px 32px rgba(0,0,0,.20)}
+    .btn{transition:background .18s,border-color .18s,transform .18s}.btn:active{transform:translateY(1px)}
+    @media(max-width:1180px){.brand span{max-width:330px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.toolbar .btn{padding:7px 9px;font-size:12px}}
 </style>
 </head>
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><strong>Veda Vastu Farms</strong><span>Visual Enhancement Final · readable plot labels, clean road edges, realistic lighting</span></div>
+    <div class="brand"><strong>Veda Vastu Farms</strong><span>Premium ArchViz V8 · source-faithful geometry · cinematic landscape, roads, lighting & viewer</span></div>
     <div class="toolbar">
       <button class="btn active" id="view3d" type="button">3D View</button>
       <button class="btn" id="viewTop" type="button">Top View</button>
+      <button class="btn" id="viewHero" type="button">Hero View</button>
+      <button class="btn" id="viewEntrance" type="button">Entrance</button>
+      <button class="btn" id="viewPark" type="button">Central Park</button>
       <button class="btn" id="reset" type="button">Reset</button>
       <button class="btn" id="moveMode" type="button" title="Left-drag pans by default; toggle off for orbit">Move</button>
       <span class="mode-set" aria-label="Lighting mode">
@@ -63,7 +70,7 @@
           <span>Interactive plots</span><b id="plotCount">-</b>
           <span>Plots with PDF area</span><b id="plotAreaCount">-</b>
           <span>Plot status</span><b>Not supplied</b>
-          <span>3D styling</span><b>Conceptual</b>
+          <span>3D styling</span><b>Premium ArchViz</b>
         </div>
       </div>
       <div class="section layers">
@@ -79,7 +86,7 @@
           <button class="active" id="toggleAmenities" type="button"><span class="swatch" style="background:#59a4ae"></span>Amenities</button>
         </div>
       </div>
-      <div class="footerNote">The plot grid, dimensions, road-width labels, feature labels and underlying masterplan come from the supplied AutoCAD PDF. Exact source annotations are preserved; no synthetic width/length values are used. Plot meshes are derived from the PDF's plot-fill geometry. The Visual Enhancement Phase adds a realistic, spatially thinned street-light layer, richer landscaping inside corrected green zones, upgraded clubhouse/pool presentation, entrance treatment, Day/Dusk/Night lighting, and a final readability pass for the clean plot ID/area labels. Decorative curb blocks and 3D plot wireframes have been removed in the final cleanup so roads meet plots cleanly without white wall-like artifacts. These are conceptual vertical/presentation treatments only; the PDF-derived plots, roads, green-area footprints, entry location and source dimensions remain unchanged.</div>
+      <div class="footerNote">The plot grid, dimensions, road-width labels, feature labels and underlying masterplan come from the supplied AutoCAD PDF. Exact source annotations are preserved; no synthetic width/length values are used. Plot meshes are derived from the PDF's plot-fill geometry. Premium ArchViz V8 keeps those approved source-derived layers intact while upgrading conceptual presentation: architectural sky/horizon treatment, richer PBR-like materials, a more detailed clubhouse/pool, a more refined entry composition, warm architectural lighting, and a Blender-ready GLB replacement layer. Optional GLB files only replace conceptual vertical assets; PDF-derived plots, roads, green-area footprints, entry location, labels, dimensions, camera controls and interaction behavior remain unchanged.</div>
     </aside>
   </div>
 </div>
