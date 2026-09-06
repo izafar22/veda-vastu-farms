@@ -1,0 +1,4 @@
+import fs from 'node:fs';
+const html=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8');
+const checks=[['title',/<title>[^<]+<\/title>/i.test(html)],['description',/name="description"[^>]+content="[^"]+/i.test(html)],['canonical',/rel="canonical"/i.test(html)],['robots',/name="robots"/i.test(html)],['lang',/<html lang="en-IN"/i.test(html)],['noscript',/<noscript>[\s\S]+<\/noscript>/i.test(html)],['sitemap',fs.existsSync(new URL('../public/sitemap.xml',import.meta.url))],['robots.txt',fs.existsSync(new URL('../public/robots.txt',import.meta.url))],['manifest',fs.existsSync(new URL('../public/site.webmanifest',import.meta.url))]];
+let pass=0; for(const [n,ok] of checks){console.log(`${ok?'PASS':'FAIL'} ${n}`);if(ok)pass++;} console.log(`\n${pass}/${checks.length} static SEO checks passed.`); if(pass!==checks.length) process.exit(1);

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Veda Vastu Farms - Interactive 3D Masterplan</title>
+  <style>
+    :root{--bg:#07130d;--panel:#0e2117;--panel2:#12291c;--line:#294533;--text:#edf5ef;--muted:#a6baac;--accent:#d8b85d;--accent2:#ebcf7b;--danger:#ffd0d0}
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}
+    body{overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{display:flex;align-items:center;gap:12px;padding:11px 14px;background:rgba(12,31,21,.98);border-bottom:1px solid var(--line);z-index:20}.brand{min-width:0;margin-right:auto}.brand strong{display:block;font-size:15px}.brand span{display:block;margin-top:2px;font-size:11px;color:var(--muted)}.toolbar{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.mode-set{display:flex;gap:5px;padding-left:7px;margin-left:2px;border-left:1px solid #355740}.btn{border:1px solid #355740;background:#142b1e;color:var(--text);border-radius:9px;padding:8px 11px;cursor:pointer;min-height:38px}.btn:hover{background:#1b3928}.btn.active{border-color:#7e7043;background:#332f1c;color:#fff1bd}.main{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 286px}.stage{position:relative;min-width:0;min-height:0;overflow:hidden;background:radial-gradient(circle at 50% 15%,#243628 0,#101c15 48%,#08110c 100%)}#canvasHost{position:absolute;inset:0}#canvasHost canvas{width:100%;height:100%;display:block;touch-action:none}.fallback{position:absolute;inset:0;display:grid;place-items:center;overflow:hidden;padding:34px;transition:opacity .25s}.fallback img{width:min(72%,760px);max-height:88%;object-fit:contain;filter:drop-shadow(0 26px 30px rgba(0,0,0,.35));transform:perspective(1200px) rotateX(48deg) rotateZ(-2deg);transform-origin:center}.fallback small{position:absolute;bottom:18px;color:var(--muted)}.fallback.hide{opacity:0;pointer-events:none}.loading{position:absolute;left:14px;top:14px;z-index:9;display:flex;align-items:center;gap:8px;background:rgba(9,24,16,.88);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px;color:var(--muted);backdrop-filter:blur(8px)}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(216,184,93,.4);animation:pulse 1.3s infinite}.loading.error{color:var(--danger)}.loading.error .dot{background:#ef8e8e;animation:none}@keyframes pulse{70%{box-shadow:0 0 0 8px rgba(216,184,93,0)}100%{box-shadow:0 0 0 0 rgba(216,184,93,0)}}.hint{position:absolute;left:14px;bottom:14px;z-index:8;border:1px solid var(--line);background:rgba(9,24,16,.86);border-radius:10px;padding:8px 10px;color:var(--muted);font-size:11px;backdrop-filter:blur(8px)}
+    .sidebar{min-width:0;background:linear-gradient(180deg,#0e2117 0%,#091810 100%);border-left:1px solid var(--line);padding:14px;overflow:auto}.section{padding:13px 0;border-bottom:1px solid var(--line)}.section:first-child{padding-top:0}.eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8fa794}.plot-id{font-size:30px;font-weight:760;line-height:1;margin-top:7px}.muted{color:var(--muted);font-size:12px;line-height:1.5}.search{display:flex;gap:7px;margin-top:9px}.search input{min-width:0;flex:1;border:1px solid #365440;background:#0a1a11;color:var(--text);border-radius:9px;padding:9px 10px;outline:none}.search input:focus{border-color:#9b8245}.kv{display:grid;grid-template-columns:1fr auto;gap:8px 12px;margin-top:10px;font-size:12px}.kv span:nth-child(odd){color:var(--muted)}.legend{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.legend button{border:1px solid var(--line);background:#0b1b12;color:var(--muted);border-radius:8px;padding:8px;text-align:left;cursor:pointer}.legend button.active{color:#ffe7a1;border-color:#6b5d37;background:#2b2718}.swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}.footerNote{padding-top:12px;color:#819a89;font-size:10px;line-height:1.45}.source-list{display:flex;flex-wrap:wrap;gap:6px}.source-chip{border:1px solid #365440;background:#0a1a11;color:#e9efe9;border-radius:7px;padding:4px 7px;font-size:11px;line-height:1.2}
+    @media(max-width:860px){.main{grid-template-columns:1fr}.sidebar{position:absolute;right:10px;bottom:10px;z-index:12;width:min(300px,calc(100% - 20px));max-height:43%;border:1px solid var(--line);border-radius:13px;background:rgba(14,33,23,.94);backdrop-filter:blur(10px);padding:12px}.section.meta,.section.layers{display:none}.topbar{align-items:flex-start}.toolbar{justify-content:flex-end}.brand span{display:none}.hint{display:none}}
+    @media(max-width:560px){.topbar{padding:9px}.brand strong{font-size:13px}.toolbar{gap:5px}.btn{font-size:12px;padding:7px 9px;min-height:34px}.sidebar{max-height:38%}.fallback img{width:94%}}
+  
+    .dim-note{margin-top:8px;color:#82998a;font-size:11px;line-height:1.4}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><strong>Veda Vastu Farms</strong><span>Visual Enhancement Final · readable plot labels, clean road edges, realistic lighting</span></div>
+    <div class="toolbar">
+      <button class="btn active" id="view3d" type="button">3D View</button>
+      <button class="btn" id="viewTop" type="button">Top View</button>
+      <button class="btn" id="reset" type="button">Reset</button>
+      <button class="btn" id="moveMode" type="button" title="Left-drag pans by default; toggle off for orbit">Move</button>
+      <span class="mode-set" aria-label="Lighting mode">
+        <button class="btn" id="modeDay" type="button">Day</button>
+        <button class="btn active" id="modeDusk" type="button">Dusk</button>
+        <button class="btn" id="modeNight" type="button">Night</button>
+      </span>
+    </div>
+  </header>
+  <div class="main">
+    <main class="stage" id="stage">
+      <div id="canvasHost"></div>
+      <div class="fallback" id="fallback"><img src="./assets/masterplan.svg" alt="Veda Vastu Farms masterplan from the supplied PDF"><small>Loading interactive 3D...</small></div>
+      <div class="loading" id="loading"><span class="dot"></span><span id="loadText">Starting Three.js...</span></div>
+      <div class="hint">Left-drag to move/pan · right/Alt-drag to orbit · wheel/pinch for unrestricted zoom · click a plot or amenity</div>
+    </main>
+    <aside class="sidebar">
+      <div class="section">
+        <div class="eyebrow" id="selectionEyebrow">Selected plot</div>
+        <div class="plot-id" id="plotId">-</div>
+        <div class="muted" id="plotDesc">Click a plot or amenity in the 3D plan, or search by plot ID.</div>
+        <div class="kv selected-kv" style="margin-top:10px"><span>Area</span><b id="plotArea">-</b></div>
+        <div style="margin-top:12px" class="eyebrow">Exact PDF dimensions</div>
+        <div id="plotDimensions" class="source-list muted" style="margin-top:7px">Select a plot to inspect exact nearby dimension annotations.</div>
+        <div style="margin-top:12px" class="eyebrow">Road width</div>
+        <div id="plotRoadWidths" class="source-list muted" style="margin-top:7px">-</div>
+        <div style="margin-top:12px" class="eyebrow">Nearby source features</div>
+        <div id="plotFeatures" class="source-list muted" style="margin-top:7px">-</div>
+        <div class="dim-note" id="plotDimensionNote">Dimensions appear after selecting a plot.</div>
+        <div class="search">
+          <input id="plotSearch" aria-label="Plot ID" placeholder="e.g. A15" autocomplete="off" />
+          <button class="btn" id="findPlot" type="button">Find</button>
+        </div>
+      </div>
+      <div class="section meta">
+        <div class="eyebrow">Source fidelity</div>
+        <div class="kv">
+          <span>Plan geometry</span><b>PDF-derived</b>
+          <span>Interactive plots</span><b id="plotCount">-</b>
+          <span>Plots with PDF area</span><b id="plotAreaCount">-</b>
+          <span>Plot status</span><b>Not supplied</b>
+          <span>3D styling</span><b>Conceptual</b>
+        </div>
+      </div>
+      <div class="section layers">
+        <div class="eyebrow">Layers</div>
+        <div class="legend">
+          <button class="active" id="togglePlan" type="button"><span class="swatch" style="background:#d8b85d"></span>PDF plan</button>
+          <button id="toggleAnnotations" type="button"><span class="swatch" style="background:#f3efe3"></span>Exact annotations</button>
+          <button class="active" id="togglePlots" type="button"><span class="swatch" style="background:#b88e38"></span>3D plots</button>
+          <button class="active" id="toggleRoads" type="button"><span class="swatch" style="background:#555b57"></span>3D roads</button>
+          <button class="active" id="toggleBase" type="button"><span class="swatch" style="background:#607b64"></span>Site slab</button>
+          <button class="active" id="toggleTrees" type="button"><span class="swatch" style="background:#3f7c4e"></span>Vegetation</button>
+          <button class="active" id="toggleLights" type="button"><span class="swatch" style="background:#ffd277"></span>Street lights</button>
+          <button class="active" id="toggleAmenities" type="button"><span class="swatch" style="background:#59a4ae"></span>Amenities</button>
+        </div>
+      </div>
+      <div class="footerNote">The plot grid, dimensions, road-width labels, feature labels and underlying masterplan come from the supplied AutoCAD PDF. Exact source annotations are preserved; no synthetic width/length values are used. Plot meshes are derived from the PDF's plot-fill geometry. The Visual Enhancement Phase adds a realistic, spatially thinned street-light layer, richer landscaping inside corrected green zones, upgraded clubhouse/pool presentation, entrance treatment, Day/Dusk/Night lighting, and a final readability pass for the clean plot ID/area labels. Decorative curb blocks and 3D plot wireframes have been removed in the final cleanup so roads meet plots cleanly without white wall-like artifacts. These are conceptual vertical/presentation treatments only; the PDF-derived plots, roads, green-area footprints, entry location and source dimensions remain unchanged.</div>
+    </aside>
+  </div>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

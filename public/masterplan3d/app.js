@@ -1,0 +1,705 @@
+const $ = id => document.getElementById(id);
+const loading = $('loading'), loadText = $('loadText'), fallback = $('fallback');
+function loadingMsg(text){ loadText.textContent = text; }
+function fail(text){ loading.classList.add('error'); loadText.textContent = text; fallback.classList.remove('hide'); }
+
+let THREE;
+try {
+  THREE = await import('https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js');
+} catch (primary) {
+  try { THREE = await import('https://unpkg.com/three@0.180.0/build/three.module.js'); }
+  catch (secondary) { console.error(primary, secondary); fail('Three.js could not load — exact PDF fallback is shown.'); throw secondary; }
+}
+
+try {
+  loadingMsg('Loading PDF-derived geometry…');
+  const data = await fetch('./assets/masterplan.json').then(r => { if(!r.ok) throw new Error('masterplan.json ' + r.status); return r.json(); });
+  $('plotCount').textContent = data.plotCount;
+  $('plotAreaCount').textContent = data.plotAreaCount ?? '—';
+
+  const probe = document.createElement('canvas');
+  if (!(probe.getContext('webgl2') || probe.getContext('webgl'))) throw new Error('WebGL is disabled in this browser');
+
+  const host = $('canvasHost');
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101c15);
+  scene.fog = new THREE.FogExp2(0x162319, 0.0046);
+
+  const camera = new THREE.PerspectiveCamera(38, 1, .03, 5000);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', alpha: false });
+  const perfDpr = (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 1 : 1.25;
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, perfDpr));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.98;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  host.appendChild(renderer.domElement);
+
+  // ---- Lighting / atmosphere ----
+  const hemi = new THREE.HemisphereLight(0xfff0d0, 0x23442d, 1.35); scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffdca0, 2.25);
+  sun.position.set(-34, 52, 30); sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024); sun.shadow.camera.left=-45; sun.shadow.camera.right=45; sun.shadow.camera.top=55; sun.shadow.camera.bottom=-55;
+  sun.shadow.bias = -0.00035; scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xa7cab1, .48); fill.position.set(30, 18, -30); scene.add(fill);
+  const warm = new THREE.PointLight(0xf5bd63, 22, 46, 2); warm.position.set(-13, 7, 25); scene.add(warm);
+
+  const planW = 42, planH = planW * (2384/1684), topY = .05;
+  const root = new THREE.Group(); scene.add(root);
+  const world = new THREE.Group(); root.add(world);
+
+  // ---- Base / surrounding land ----
+  const surrounding = new THREE.Mesh(
+    new THREE.PlaneGeometry(120, 140),
+    new THREE.MeshStandardMaterial({color:0x31553a, roughness:1, metalness:0})
+  );
+  surrounding.rotation.x = -Math.PI/2; surrounding.position.y = -0.61; surrounding.receiveShadow = true; scene.add(surrounding);
+
+  const slabMat = new THREE.MeshStandardMaterial({color:0x657a5d, roughness:.98});
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(planW+1.4,.9,planH+1.4),slabMat);
+  slab.position.y=-.47; slab.receiveShadow=true; world.add(slab);
+  const lipMat = new THREE.MeshStandardMaterial({color:0xd8d1b8, roughness:.9});
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(planW+.38,.12,planH+.38),lipMat);
+  lip.position.y=-.03; lip.receiveShadow=true; world.add(lip);
+
+  loadingMsg('Loading exact vector masterplan…');
+  const texture = await new Promise((resolve,reject)=>{
+    new THREE.TextureLoader().load('./assets/masterplan.svg',resolve,undefined,()=>{
+      new THREE.TextureLoader().load('./assets/masterplan-fallback.png',resolve,undefined,reject);
+    });
+  });
+  texture.colorSpace=THREE.SRGBColorSpace; texture.anisotropy=Math.min(12,renderer.capabilities.getMaxAnisotropy());
+  const CLEAN_PLAN_OPACITY=.055, EXACT_PLAN_OPACITY=.015;
+  const planMat = new THREE.MeshStandardMaterial({map:texture, transparent:true, opacity:CLEAN_PLAN_OPACITY, roughness:.98, metalness:0, side:THREE.DoubleSide});
+  const plan = new THREE.Mesh(new THREE.PlaneGeometry(planW,planH),planMat);
+  plan.rotation.x=-Math.PI/2; plan.position.y=topY; plan.receiveShadow=true; world.add(plan);
+
+  // ---- Exact PDF annotation overlay ----
+  // Preserves source text values and their source positions: plot IDs/areas, linear dimensions,
+  // road-width labels and named features. This sits above 3D plot slabs so the source data is not hidden.
+  loadingMsg('Loading exact PDF annotations…');
+  const annotationTexture = await new Promise((resolve,reject)=>{
+    new THREE.TextureLoader().load('./assets/exact-annotations.svg',resolve,undefined,reject);
+  });
+  annotationTexture.colorSpace=THREE.SRGBColorSpace;
+  annotationTexture.anisotropy=Math.min(12,renderer.capabilities.getMaxAnisotropy());
+  const annotationMat=new THREE.MeshBasicMaterial({map:annotationTexture,transparent:true,opacity:.96,depthWrite:false,side:THREE.DoubleSide});
+  const annotationPlane=new THREE.Mesh(new THREE.PlaneGeometry(planW,planH),annotationMat);
+  annotationPlane.rotation.x=-Math.PI/2; annotationPlane.position.y=.515; annotationPlane.renderOrder=50; annotationPlane.visible=false; world.add(annotationPlane);
+
+  // ---- Exact 3D road network extracted from the PDF ----
+  // The road surfaces are segmented from the exact gray road geometry in the supplied
+  // AutoCAD-derived PDF render. They are extruded as one continuous network, preserving
+  // internal roads, entry roads and the expressway alignment visible in the source.
+  loadingMsg('Building exact 3D roads…');
+  const roadData = await fetch('./assets/roads.json').then(r => { if(!r.ok) throw new Error('roads.json ' + r.status); return r.json(); });
+  const roadGroup = new THREE.Group(); roadGroup.position.y=.055; world.add(roadGroup);
+  const roadTopMat = new THREE.MeshStandardMaterial({color:0x4f5350,roughness:.94,metalness:0});
+  const roadSideMat = new THREE.MeshStandardMaterial({color:0xc8c2ab,roughness:.96,metalness:0});
+  function roadShape(component){
+    const s=new THREE.Shape();
+    component.polygon.forEach(([u,v],i)=>{ const x=(u-.5)*planW, y=(.5-v)*planH; if(i===0)s.moveTo(x,y); else s.lineTo(x,y); });
+    s.closePath();
+    for(const holePoly of (component.holes||[])){
+      const h=new THREE.Path();
+      holePoly.forEach(([u,v],i)=>{ const x=(u-.5)*planW, y=(.5-v)*planH; if(i===0)h.moveTo(x,y); else h.lineTo(x,y); });
+      h.closePath(); s.holes.push(h);
+    }
+    return s;
+  }
+  for(const comp of roadData.components){
+    const g=new THREE.ExtrudeGeometry(roadShape(comp),{depth:.13,bevelEnabled:false,curveSegments:1});
+    g.rotateX(-Math.PI/2);
+    const m=new THREE.Mesh(g,[roadTopMat,roadSideMat]);
+    m.castShadow=true; m.receiveShadow=true; roadGroup.add(m);
+  }
+
+
+  // ---- VISUAL ENHANCEMENT: realistic street lighting derived from exact road boundaries ----
+  // Decorative curb blocks were intentionally removed in the final cleanup. They created
+  // white wall-like strips beside internal roads at close zoom. The PDF-derived road mesh
+  // itself now provides the clean road-to-plot transition; only lighting is added here.
+  loadingMsg('Adding realistic street lights…');
+  const roadDecorGroup = new THREE.Group(); world.add(roadDecorGroup);
+  const streetLightGroup = new THREE.Group(); roadDecorGroup.add(streetLightGroup);
+
+  function worldRing(ring){ return ring.map(([u,v])=>new THREE.Vector3((u-.5)*planW,0,(v-.5)*planH)); }
+  function ringLength(points){
+    let total=0; for(let i=0;i<points.length;i++) total+=points[i].distanceTo(points[(i+1)%points.length]); return total;
+  }
+  function sampleClosedRing(ring, spacing){
+    const pts=worldRing(ring), out=[];
+    if(pts.length<2) return out;
+    let carry=0;
+    for(let i=0;i<pts.length;i++){
+      const a=pts[i], b=pts[(i+1)%pts.length], seg=b.clone().sub(a), len=seg.length();
+      if(len<1e-5) continue;
+      const dir=seg.clone().multiplyScalar(1/len);
+      let d=carry===0?0:spacing-carry;
+      while(d<len){ out.push({p:a.clone().addScaledVector(dir,d),dir:dir.clone()}); d+=spacing; }
+      carry=(carry+len)%spacing;
+    }
+    return out;
+  }
+  const roadRings=[];
+  for(const comp of roadData.components){ roadRings.push(comp.polygon,...(comp.holes||[])); }
+
+  // Realistic street-light density: candidates follow the actual road boundaries and are
+  // spatially thinned so parallel plot edges do not receive duplicate lamp posts.
+  const lampCandidates=[];
+  for(const ring of roadRings){
+    if(ringLength(worldRing(ring))<6.0) continue;
+    lampCandidates.push(...sampleClosedRing(ring,5.80));
+  }
+  const lampSamples=[];
+  const minLampDistance=2.9;
+  const minLampDistanceSq=minLampDistance*minLampDistance;
+  for(const sample of lampCandidates){
+    if(lampSamples.every(existing=>existing.p.distanceToSquared(sample.p)>=minLampDistanceSq)) lampSamples.push(sample);
+    if(lampSamples.length>=72) break;
+  }
+  const poleGeo=new THREE.CylinderGeometry(.025,.038,.82,7);
+  const poleMat=new THREE.MeshStandardMaterial({color:0x252a26,roughness:.66,metalness:.26});
+  const bulbGeo=new THREE.SphereGeometry(.055,8,6);
+  const bulbMat=new THREE.MeshStandardMaterial({color:0xffe0a0,emissive:0xff9f31,emissiveIntensity:2.1,roughness:.34});
+  const capGeo=new THREE.CylinderGeometry(.085,.058,.035,8);
+  const capMat=new THREE.MeshStandardMaterial({color:0x303631,roughness:.62,metalness:.24});
+  const lampCount=lampSamples.length;
+  const poles=new THREE.InstancedMesh(poleGeo,poleMat,lampCount);
+  const bulbs=new THREE.InstancedMesh(bulbGeo,bulbMat,lampCount);
+  const caps=new THREE.InstancedMesh(capGeo,capMat,lampCount);
+  poles.castShadow=false; caps.castShadow=false;
+  const decorDummy=new THREE.Object3D();
+  for(let i=0;i<lampCount;i++){
+    const {p}=lampSamples[i];
+    decorDummy.position.set(p.x,.56,p.z); decorDummy.rotation.set(0,0,0); decorDummy.scale.set(1,1,1); decorDummy.updateMatrix(); poles.setMatrixAt(i,decorDummy.matrix);
+    decorDummy.position.set(p.x,.985,p.z); decorDummy.scale.set(1,1,1); decorDummy.updateMatrix(); caps.setMatrixAt(i,decorDummy.matrix);
+    decorDummy.position.set(p.x,.955,p.z); decorDummy.scale.set(1,1,1); decorDummy.updateMatrix(); bulbs.setMatrixAt(i,decorDummy.matrix);
+  }
+  streetLightGroup.add(poles,caps,bulbs);
+
+  const streetPointLights=[];
+  for(let i=0;i<lampCount;i+=24){
+    const p=lampSamples[i].p;
+    const pl=new THREE.PointLight(0xffa846,0,3.2,2.15);
+    pl.position.set(p.x,.96,p.z); streetLightGroup.add(pl); streetPointLights.push(pl);
+  }
+
+  // ---- Accurate PDF plot meshes ----
+  const sectorColors={A:0xd9bc6b,B:0xd3b15f,C:0xe1c574,D:0xcfa957,E:0xd8b763,G:0xc9a452};
+  const plotGroup=new THREE.Group(); plotGroup.position.y=topY+.015; world.add(plotGroup);
+  const plots=[]; const byId=new Map();
+  function toShape(poly){
+    const s=new THREE.Shape();
+    poly.forEach(([u,v],i)=>{ const x=(u-.5)*planW, y=(.5-v)*planH; if(i===0)s.moveTo(x,y); else s.lineTo(x,y); });
+    s.closePath(); return s;
+  }
+  for(const item of data.plots){
+    if(!item.polygon || item.polygon.length<3) continue;
+    const geom=new THREE.ExtrudeGeometry(toShape(item.polygon),{depth:.22,bevelEnabled:true,bevelSize:.025,bevelThickness:.025,bevelSegments:1,curveSegments:1});
+    geom.rotateX(-Math.PI/2);
+    const baseColor=sectorColors[item.sector]||0xd4af57;
+    const topMat=new THREE.MeshStandardMaterial({color:baseColor, roughness:.88, metalness:0, polygonOffset:true, polygonOffsetFactor:-1});
+    const sideMat=new THREE.MeshStandardMaterial({color:0x765f35, roughness:.94});
+    const mesh=new THREE.Mesh(geom,[topMat,sideMat]);
+    mesh.userData={...item,normalMaterials:[topMat,sideMat]}; mesh.castShadow=false; mesh.receiveShadow=true;
+    plotGroup.add(mesh); plots.push(mesh);
+    const key=item.id.toUpperCase(); if(!byId.has(key))byId.set(key,[]); byId.get(key).push(mesh);
+  }
+
+  // ---- Clean 3D plot annotations ----
+  // The raw PDF plan contains dense text. In 3D that text can overlap with the exact-annotation
+  // overlay and look like gibberish, so the default presentation uses one camera-facing label per
+  // plot (ID + PDF area). The full exact PDF annotation plane remains available as a separate layer.
+  const labelGroup = new THREE.Group(); world.add(labelGroup);
+  // Final readability pass: larger plot IDs and slightly larger area text while keeping
+  // the labels compact enough to avoid bringing back the dense-source-annotation clutter.
+  const LABEL_BASE_W=1.50, LABEL_BASE_H=.64;
+  function makeLabelSprite(item){
+    const c=document.createElement('canvas'); c.width=320; c.height=144;
+    const ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
+    ctx.fillStyle='rgba(20,25,19,.86)'; ctx.roundRect(40,15,240,114,18); ctx.fill();
+    ctx.strokeStyle='rgba(238,207,123,.68)'; ctx.lineWidth=2.4; ctx.stroke();
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(0,0,0,.65)'; ctx.shadowBlur=4; ctx.shadowOffsetY=1;
+    ctx.fillStyle='#fff9e8'; ctx.font='800 44px Inter, Arial, sans-serif'; ctx.fillText(item.id,160,item.areaDisplay?55:72);
+    if(item.areaDisplay){
+      ctx.shadowBlur=3;
+      ctx.fillStyle='#f2dfaa'; ctx.font='700 20px Inter, Arial, sans-serif'; ctx.fillText(item.areaDisplay,160,96);
+    }
+    const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.minFilter=THREE.LinearFilter;
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false,depthTest:true}));
+    sp.scale.set(LABEL_BASE_W,LABEL_BASE_H,1); return sp;
+  }
+  for(const item of data.plots){
+    if(!item.label) continue; const [u,v]=item.label; const sp=makeLabelSprite(item);
+    sp.position.set((u-.5)*planW,.50,(v-.5)*planH); sp.userData.plotId=item.id; labelGroup.add(sp);
+  }
+
+  // ---- Landscaping: lightweight instanced trees (conceptual treatment, plan geometry untouched) ----
+  const landscapeGroup = new THREE.Group(); world.add(landscapeGroup);
+  const trunkGeo = new THREE.CylinderGeometry(.055,.08,.55,7);
+  const crownGeo = new THREE.ConeGeometry(.28,.72,10);
+  const trunkMat = new THREE.MeshStandardMaterial({color:0x5b4028,roughness:1});
+  const crownMat = new THREE.MeshStandardMaterial({color:0x2f6841,roughness:.98});
+  const crownMat2 = new THREE.MeshStandardMaterial({color:0x4a7b4e,roughness:.98});
+  const treePoints=[];
+  const rng=(seed=>()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296})(7351);
+  function uv(u,v){ return new THREE.Vector3((u-.5)*planW,0,(v-.5)*planH); }
+  function addPolyline(points, spacing=.018){
+    for(let i=0;i<points.length-1;i++){
+      const [a,b]=[points[i],points[i+1]], dx=b[0]-a[0],dy=b[1]-a[1],len=Math.hypot(dx,dy),n=Math.max(1,Math.floor(len/spacing));
+      for(let j=0;j<=n;j++){ const t=j/n; treePoints.push([a[0]+dx*t+(rng()-.5)*.0035,a[1]+dy*t+(rng()-.5)*.0035]); }
+    }
+  }
+  // Perimeter lines traced approximately from the supplied PDF. They decorate only; they do not define plot geometry.
+  addPolyline([[.20,.08],[.31,.07],[.40,.06],[.55,.055],[.63,.07],[.68,.16],[.70,.34],[.72,.47],[.70,.53]]);
+  addPolyline([[.70,.53],[.69,.67],[.66,.78],[.62,.89],[.56,.96],[.48,.98],[.40,.94],[.34,.88],[.29,.80]]);
+  addPolyline([[.29,.80],[.25,.73],[.22,.66],[.19,.59],[.16,.53],[.13,.48],[.10,.42],[.12,.34],[.15,.27],[.17,.18],[.20,.08]]);
+  // Lower section east/west boundaries
+  addPolyline([[.34,.58],[.31,.66],[.28,.76],[.26,.85],[.29,.94],[.42,.99]]);
+  addPolyline([[.69,.54],[.69,.64],[.67,.75],[.64,.86],[.60,.96]]);
+  // Selected internal avenues / amenity edges, positioned only as landscaping accents.
+  addPolyline([[.34,.21],[.52,.22],[.62,.25]],.030);
+  addPolyline([[.33,.39],[.53,.40],[.66,.43]],.030);
+  addPolyline([[.37,.59],[.50,.61],[.62,.63]],.032);
+  addPolyline([[.39,.76],[.50,.78],[.61,.80]],.032);
+
+  const treeCount=Math.min(340,treePoints.length);
+  const trunks=new THREE.InstancedMesh(trunkGeo,trunkMat,treeCount);
+  const crowns=new THREE.InstancedMesh(crownGeo,crownMat,treeCount);
+  const crowns2=new THREE.InstancedMesh(crownGeo,crownMat2,treeCount);
+  trunks.castShadow=false; crowns.castShadow=false; crowns2.castShadow=false;
+  const dummy=new THREE.Object3D();
+  for(let i=0;i<treeCount;i++){
+    const [u0,v0]=treePoints[i], p=uv(u0,v0), s=.72+rng()*.50;
+    dummy.position.set(p.x,.31*s,p.z); dummy.scale.set(s,s,s); dummy.rotation.y=rng()*Math.PI*2; dummy.updateMatrix(); trunks.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x,.84*s,p.z); dummy.scale.set(s,s,s); dummy.rotation.y=rng()*Math.PI*2; dummy.updateMatrix(); crowns.setMatrixAt(i,dummy.matrix);
+    dummy.position.set(p.x+.03,.99*s,p.z-.02); dummy.scale.set(.72*s,.72*s,.72*s); dummy.rotation.y=rng()*Math.PI*2; dummy.updateMatrix(); crowns2.setMatrixAt(i,dummy.matrix);
+  }
+  landscapeGroup.add(trunks,crowns,crowns2);
+
+  // ---- Full source-derived 3D GREEN AREA surfaces ----
+  // These polygons are extracted from the actual mint/green filled regions in the supplied PDF
+  // around the exact GREEN AREA annotations. Unlike the earlier circular markers, the complete
+  // source region is now filled with a raised grass surface and distributed vegetation.
+  loadingMsg('Building full 3D green areas…');
+  const greenData = await fetch('./assets/greenareas.json').then(r => { if(!r.ok) throw new Error('greenareas.json ' + r.status); return r.json(); });
+  const greenAreaGroup = new THREE.Group(); landscapeGroup.add(greenAreaGroup);
+  const grassTopMat = new THREE.MeshStandardMaterial({color:0x5f9256,roughness:1,metalness:0});
+  const grassSideMat = new THREE.MeshStandardMaterial({color:0x3f673d,roughness:1,metalness:0});
+  const greenEdgeMat = new THREE.LineBasicMaterial({color:0xb8d79d,transparent:true,opacity:.42});
+  function greenShape(component){
+    const s=new THREE.Shape();
+    component.polygon.forEach(([u,v],i)=>{ const x=(u-.5)*planW, y=(.5-v)*planH; if(i===0)s.moveTo(x,y); else s.lineTo(x,y); });
+    s.closePath();
+    for(const holePoly of (component.holes||[])){
+      const h=new THREE.Path();
+      holePoly.forEach(([u,v],i)=>{ const x=(u-.5)*planW, y=(.5-v)*planH; if(i===0)h.moveTo(x,y); else h.lineTo(x,y); });
+      h.closePath(); s.holes.push(h);
+    }
+    return s;
+  }
+  for(const comp of greenData.components){
+    const geom=new THREE.ExtrudeGeometry(greenShape(comp),{depth:.065,bevelEnabled:true,bevelSize:.012,bevelThickness:.012,bevelSegments:1,curveSegments:1});
+    geom.rotateX(-Math.PI/2);
+    const lawnMesh=new THREE.Mesh(geom,[grassTopMat,grassSideMat]);
+    lawnMesh.position.y=.062; lawnMesh.castShadow=true; lawnMesh.receiveShadow=true; greenAreaGroup.add(lawnMesh);
+    const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geom,28),greenEdgeMat); edge.position.y=.065; greenAreaGroup.add(edge);
+  }
+
+  // Vegetation is distributed across the complete PDF-derived green surfaces, not around label points.
+  const greenVegPoints=greenData.vegetationPoints||[];
+  const shrubGeoFull=new THREE.IcosahedronGeometry(.095,1);
+  const shrubMatFull=new THREE.MeshStandardMaterial({color:0x356d3c,roughness:1});
+  const shrubMatFull2=new THREE.MeshStandardMaterial({color:0x73965a,roughness:1});
+  const grassTuftGeo=new THREE.ConeGeometry(.055,.22,5);
+  const grassTuftMat=new THREE.MeshStandardMaterial({color:0x477d45,roughness:1});
+  const shrubCount=Math.min(520,greenVegPoints.length);
+  const tuftCount=Math.min(663,greenVegPoints.length);
+  const shrubsFull=new THREE.InstancedMesh(shrubGeoFull,shrubMatFull,shrubCount);
+  const shrubsFull2=new THREE.InstancedMesh(shrubGeoFull,shrubMatFull2,shrubCount);
+  const grassTufts=new THREE.InstancedMesh(grassTuftGeo,grassTuftMat,tuftCount);
+  shrubsFull.castShadow=false; shrubsFull2.castShadow=false; grassTufts.castShadow=false;
+  const vegDummy=new THREE.Object3D();
+  for(let i=0;i<tuftCount;i++){
+    const [u0,v0,ss]=greenVegPoints[i], p=uv(u0,v0);
+    const s0=.55+ss*.34;
+    vegDummy.position.set(p.x,.175,p.z); vegDummy.scale.set(s0,s0,s0); vegDummy.rotation.y=(i*.754)%6.283; vegDummy.updateMatrix(); grassTufts.setMatrixAt(i,vegDummy.matrix);
+    if(i<shrubCount){
+      const shrubScale=.46+ss*.30;
+      vegDummy.position.set(p.x+.035*Math.sin(i),.17,p.z+.035*Math.cos(i)); vegDummy.scale.set(shrubScale,shrubScale*.72,shrubScale); vegDummy.rotation.y=(i*.381)%6.283; vegDummy.updateMatrix();
+      (i%4===0?shrubsFull2:shrubsFull).setMatrixAt(i,vegDummy.matrix);
+      // Ensure the unused instance in the alternate mesh is harmlessly scaled to zero.
+      vegDummy.scale.set(0,0,0); vegDummy.updateMatrix();
+      (i%4===0?shrubsFull:shrubsFull2).setMatrixAt(i,vegDummy.matrix);
+    }
+  }
+  greenAreaGroup.add(grassTufts,shrubsFull,shrubsFull2);
+
+  // A sparse set of small trees across the broader designated green zones adds real depth while
+  // keeping the PDF dimensions and annotations legible.
+  const fullTreePts=greenVegPoints.filter((_,i)=>i%23===0).slice(0,32);
+  for(let i=0;i<fullTreePts.length;i++){
+    const [u0,v0,ss]=fullTreePts[i], p=uv(u0,v0), sc=.62+ss*.18;
+    const tr=new THREE.Mesh(trunkGeo,trunkMat); tr.scale.set(sc,sc,sc); tr.position.set(p.x,.30*sc,p.z); tr.castShadow=true; greenAreaGroup.add(tr);
+    const cr=new THREE.Mesh(crownGeo,i%2?crownMat:crownMat2); cr.scale.set(sc*.92,sc*.92,sc*.92); cr.position.set(p.x,.82*sc,p.z); cr.castShadow=true; greenAreaGroup.add(cr);
+  }
+
+
+  // Premium planting mix inspired by the approved visual reference. Positions are sourced only from
+  // vegetationPoints that already lie inside corrected PDF-derived green polygons.
+  const featureTreePts=greenVegPoints.filter((_,i)=>i%8===0).slice(0,88);
+  const palmTrunkGeo=new THREE.CylinderGeometry(.035,.075,.88,7);
+  const palmTrunkMat=new THREE.MeshStandardMaterial({color:0x7a5431,roughness:.9});
+  const palmCrownGeo=new THREE.IcosahedronGeometry(.31,1);
+  const palmCrownMat=new THREE.MeshStandardMaterial({color:0x3d7e42,roughness:.96});
+  const flowerCrownGeo=new THREE.IcosahedronGeometry(.29,1);
+  const flowerMats=[
+    new THREE.MeshStandardMaterial({color:0x8d6a87,roughness:.98}),
+    new THREE.MeshStandardMaterial({color:0xb88188,roughness:.98}),
+    new THREE.MeshStandardMaterial({color:0x668f53,roughness:.98})
+  ];
+  const ftCount=featureTreePts.length;
+  const palmTrunks=new THREE.InstancedMesh(palmTrunkGeo,palmTrunkMat,ftCount);
+  const palmCrowns=new THREE.InstancedMesh(palmCrownGeo,palmCrownMat,ftCount);
+  const flowerCrowns=flowerMats.map(m=>new THREE.InstancedMesh(flowerCrownGeo,m,ftCount));
+  palmTrunks.castShadow=false; palmCrowns.castShadow=false; flowerCrowns.forEach(x=>x.castShadow=false);
+  for(let i=0;i<ftCount;i++){
+    const [u0,v0,ss]=featureTreePts[i],p=uv(u0,v0),sc=.82+ss*.28;
+    const isPalm=i%3!==0;
+    if(isPalm){
+      decorDummy.position.set(p.x,.48*sc,p.z); decorDummy.scale.set(sc,sc,sc); decorDummy.rotation.set(0,(i*.71)%6.28,0); decorDummy.updateMatrix(); palmTrunks.setMatrixAt(i,decorDummy.matrix);
+      decorDummy.position.set(p.x,.97*sc,p.z); decorDummy.scale.set(1.12*sc,.48*sc,1.12*sc); decorDummy.updateMatrix(); palmCrowns.setMatrixAt(i,decorDummy.matrix);
+      flowerCrowns.forEach(mesh=>{decorDummy.scale.set(0,0,0);decorDummy.updateMatrix();mesh.setMatrixAt(i,decorDummy.matrix)});
+    }else{
+      decorDummy.scale.set(0,0,0); decorDummy.updateMatrix(); palmTrunks.setMatrixAt(i,decorDummy.matrix); palmCrowns.setMatrixAt(i,decorDummy.matrix);
+      const idx=i%flowerCrowns.length;
+      flowerCrowns.forEach((mesh,j)=>{
+        if(j===idx){decorDummy.position.set(p.x,.73*sc,p.z);decorDummy.scale.set(1.15*sc,.92*sc,1.15*sc);decorDummy.rotation.set(0,(i*.4)%6.28,0);decorDummy.updateMatrix();}
+        else {decorDummy.scale.set(0,0,0);decorDummy.updateMatrix();}
+        mesh.setMatrixAt(i,decorDummy.matrix);
+      });
+    }
+  }
+  greenAreaGroup.add(palmTrunks,palmCrowns,...flowerCrowns);
+
+  // ---- Conceptual clubhouse + pool on the clubhouse area shown in the PDF ----
+  const amenityGroup = new THREE.Group(); world.add(amenityGroup);
+  const amenityHitTargets=[];
+  const clubAmenityInfo={
+    kind:'amenity',
+    id:'CLUB HOUSE',
+    title:'Club House',
+    areaDisplay:'Not stated in PDF',
+    sourceFeatures:['CLUB','Club House','Pool'],
+    description:'The Club House and Pool are explicitly labeled in the supplied PDF at this amenity zone. The 3D building form, deck, glazing, pergola, materials and architectural lighting are conceptual presentation treatments; the PDF does not provide building elevations or architectural dimensions.'
+  };
+  function tagAmenity(mesh,info=clubAmenityInfo){ mesh.userData.amenityInfo=info; amenityHitTargets.push(mesh); return mesh; }
+  function box(w,h,d,color,x,y,z,rough=.75){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color,roughness:rough}));m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;amenityGroup.add(m);return m; }
+  const clubPos=uv(.463,.846);
+  const lawn=box(4.9,.035,3.8,0x648e58,clubPos.x,.07,clubPos.z-.03,.98); lawn.rotation.y=-.10;
+  const deck=box(2.65,.045,1.82,0xd9cfb7,clubPos.x-.05,.095,clubPos.z-.24,.84); deck.rotation.y=-.10;
+  const club=box(2.10,.68,1.12,0xe8dfcd,clubPos.x,.40,clubPos.z+.42,.64); club.rotation.y=-.10;
+  const wing=box(1.00,.46,.76,0xd8c9ae,clubPos.x+1.12,.30,clubPos.z+.12,.70); wing.rotation.y=-.10;
+  const roof=box(2.38,.10,1.34,0x5a4d3c,clubPos.x,.80,clubPos.z+.42,.76); roof.rotation.y=-.10;
+  const wingRoof=box(1.14,.08,.88,0x65523c,clubPos.x+1.12,.57,clubPos.z+.12,.78); wingRoof.rotation.y=-.10;
+  const glassMat=new THREE.MeshStandardMaterial({color:0x67aeb9,roughness:.18,metalness:.05,transparent:true,opacity:.80,emissive:0x16444b,emissiveIntensity:.25});
+  const glazing=new THREE.Mesh(new THREE.BoxGeometry(1.76,.34,.04),glassMat); glazing.position.set(clubPos.x,.41,clubPos.z-.153); glazing.rotation.y=-.10; amenityGroup.add(glazing);
+  const poolEdge=box(1.74,.055,1.06,0xeee4d1,clubPos.x-.28,.115,clubPos.z-.96,.70); poolEdge.rotation.y=-.10;
+  const waterMat=new THREE.MeshStandardMaterial({color:0x42a7bb,roughness:.14,metalness:.03,emissive:0x0d4d59,emissiveIntensity:.32,transparent:true,opacity:.92});
+  const pool=new THREE.Mesh(new THREE.BoxGeometry(1.48,.025,.82),waterMat); pool.position.set(clubPos.x-.28,.155,clubPos.z-.96); pool.rotation.y=-.10; pool.receiveShadow=true; amenityGroup.add(pool);
+  // Warm architectural strips make the clubhouse read clearly in dusk/night modes.
+  const clubGlowMat=new THREE.MeshStandardMaterial({color:0xffd88a,emissive:0xffa53c,emissiveIntensity:1.7,roughness:.45});
+  for(const dx of [-.72,0,.72]){ const g=box(.42,.035,.035,0xffd88a,clubPos.x+dx,.58,clubPos.z-.19,.45); g.material=clubGlowMat; }
+  // Minimal pergola for a premium presentation without redefining the source amenity footprint.
+  for(const dx of [-.52,-.17,.17,.52]) box(.035,.50,.035,0x765b3c,clubPos.x+dx,.33,clubPos.z-1.56,.72);
+  for(const dz of [-1.73,-1.50,-1.27]) box(1.20,.035,.035,0x765b3c,clubPos.x,.59,clubPos.z+dz,.72);
+  // Make the complete clubhouse/pool visual cluster clickable without changing its source-faithful footprint.
+  amenityGroup.children.forEach(obj=>{ if(obj.isMesh) tagAmenity(obj); });
+
+  // ---- Main township entry gate ----
+  // IMPORTANT: this is anchored to the actual ENTRY annotation on the supplied PDF,
+  // at the east-side access connecting the township to the proposed 6-lane road.
+  // The previous prototype incorrectly placed the gate at the southern tip of the site.
+  const entranceGroup=new THREE.Group(); world.add(entranceGroup);
+  const MAIN_ENTRY_UV=[0.655329,0.540730]; // exact normalized position from PDF text geometry
+  const gatePos=uv(MAIN_ENTRY_UV[0],MAIN_ENTRY_UV[1]);
+  const gateMat=new THREE.MeshStandardMaterial({color:0xd8c79b,roughness:.7});
+  // The entry road runs roughly west-east here, so the gate spans it north-south.
+  for(const dz of [-.55,.55]){
+    const p=new THREE.Mesh(new THREE.BoxGeometry(.13,1.05,.16),gateMat);
+    p.position.set(gatePos.x,.48,gatePos.z+dz); p.castShadow=true; entranceGroup.add(p);
+  }
+  const beam=new THREE.Mesh(new THREE.BoxGeometry(1.28,.16,.18),gateMat);
+  beam.position.set(gatePos.x,1.0,gatePos.z); beam.rotation.y=Math.PI/2; beam.castShadow=true; entranceGroup.add(beam);
+
+  // Premium gate fins, landscaped plinths and brand sign; still anchored to exact PDF ENTRY point.
+  const darkGateMat=new THREE.MeshStandardMaterial({color:0x4e483e,roughness:.62,metalness:.08});
+  for(const dz of [-.55,.55]){
+    const fin=new THREE.Mesh(new THREE.BoxGeometry(.08,.82,.34),darkGateMat); fin.position.set(gatePos.x-.11,.52,gatePos.z+dz); fin.castShadow=true; entranceGroup.add(fin);
+    const planter=new THREE.Mesh(new THREE.BoxGeometry(.52,.16,.42),new THREE.MeshStandardMaterial({color:0xb8ab89,roughness:.90})); planter.position.set(gatePos.x-.28,.12,gatePos.z+dz); planter.castShadow=true; entranceGroup.add(planter);
+  }
+  const signCanvas=document.createElement('canvas'); signCanvas.width=512; signCanvas.height=128;
+  const sctx=signCanvas.getContext('2d'); sctx.fillStyle='#292b25'; sctx.fillRect(0,0,512,128); sctx.strokeStyle='#d7ba66'; sctx.lineWidth=5; sctx.strokeRect(7,7,498,114);
+  sctx.fillStyle='#f5e7b6'; sctx.textAlign='center'; sctx.textBaseline='middle'; sctx.font='700 54px Georgia, serif'; sctx.fillText('VEDA VASTU',256,65);
+  const signTex=new THREE.CanvasTexture(signCanvas); signTex.colorSpace=THREE.SRGBColorSpace;
+  const sign=new THREE.Mesh(new THREE.PlaneGeometry(.86,.22),new THREE.MeshBasicMaterial({map:signTex,transparent:false,side:THREE.DoubleSide}));
+  sign.position.set(gatePos.x-.10,1.0,gatePos.z); sign.rotation.y=Math.PI/2; entranceGroup.add(sign);
+  const lampMat=new THREE.MeshStandardMaterial({color:0xf4d88d,emissive:0xd7a43c,emissiveIntensity:1.15,roughness:.45});
+  const lampGeo=new THREE.SphereGeometry(.055,8,6);
+  // Warm guide lights follow the actual approach road immediately west of the source ENTRY marker.
+  for(let i=0;i<8;i++){
+    const t=i/7;
+    const p=uv(MAIN_ENTRY_UV[0]-.010-.070*t, MAIN_ENTRY_UV[1]+.002*Math.sin(t*Math.PI));
+    for(const side of [-1,1]){
+      const l=new THREE.Mesh(lampGeo,lampMat);
+      l.position.set(p.x,.26,p.z+side*.34); entranceGroup.add(l);
+    }
+  }
+
+  for(const [du,dv] of [[-.012,-.016],[-.012,.016],[-.035,-.021],[-.035,.021]]){
+    const p=uv(MAIN_ENTRY_UV[0]+du,MAIN_ENTRY_UV[1]+dv);
+    const tr=new THREE.Mesh(palmTrunkGeo,palmTrunkMat); tr.position.set(p.x,.44,p.z); tr.castShadow=true; entranceGroup.add(tr);
+    const cr=new THREE.Mesh(palmCrownGeo,palmCrownMat); cr.scale.set(1.18,.5,1.18); cr.position.set(p.x,.94,p.z); cr.castShadow=true; entranceGroup.add(cr);
+  }
+
+  // ---- Selection / interaction ----
+  const selectedTop=new THREE.MeshStandardMaterial({color:0xffd56a,transparent:true,opacity:.72,roughness:.5,emissive:0x594300,emissiveIntensity:.28});
+  const selectedSide=new THREE.MeshStandardMaterial({color:0xa77b22,transparent:true,opacity:.96,roughness:.72});
+  const hoverTop=new THREE.MeshStandardMaterial({color:0xf2cf75,transparent:true,opacity:.34,roughness:.62});
+  const hoverSide=new THREE.MeshStandardMaterial({color:0x80662f,transparent:true,opacity:.72,roughness:.85});
+  let selected=null,hovered=null,selectedAmenity=null;
+  function resetSelectionPanel(){
+    $('selectionEyebrow').textContent='Selected plot';
+    $('plotId').textContent='—'; $('plotArea').textContent='—';
+    $('plotDimensions').innerHTML='Select a plot to inspect exact nearby dimension annotations.';
+    $('plotRoadWidths').textContent='—'; $('plotFeatures').textContent='—';
+    $('plotDesc').textContent='Click a plot or amenity in the 3D plan, or search by plot ID.';
+    $('plotDimensionNote').textContent='Dimensions appear after selecting a plot.';
+  }
+  function setSelectedAmenity(info,focus=true){
+    if(selected){selected.material=selected.userData.normalMaterials;selected.position.y=0;selected=null;}
+    selectedAmenity=info;
+    $('selectionEyebrow').textContent='Selected amenity';
+    $('plotId').textContent=info.title || info.id;
+    $('plotArea').textContent=info.areaDisplay || 'Not stated in PDF';
+    $('plotDimensions').innerHTML='<span class="muted">No clubhouse building dimensions or elevations are stated in the source PDF.</span>';
+    $('plotRoadWidths').textContent='Not individually stated for the amenity.';
+    $('plotFeatures').innerHTML=(info.sourceFeatures||[]).map(t=>`<span class="source-chip">${t}</span>`).join('');
+    $('plotDesc').textContent=info.description;
+    $('plotDimensionNote').textContent='Source-faithful amenity location; 3D architecture and lighting are conceptual visual enhancements.';
+    $('plotSearch').value='';
+    if(focus){ targetGoal.set(clubPos.x,0,clubPos.z); radiusGoal=Math.min(radiusGoal,24); phiGoal=.72; }
+    requestRender();
+  }
+  function setSelected(mesh,focus=true){
+    if(selected){selected.material=selected.userData.normalMaterials;selected.position.y=0}
+    selected=mesh; selectedAmenity=null;
+    if(!mesh){ resetSelectionPanel(); return; }
+    $('selectionEyebrow').textContent='Selected plot';
+    $('plotDimensionNote').textContent='Dimensions below are exact PDF annotations spatially associated with the selected plot.';
+    if(hovered===mesh)hovered=null;
+    mesh.material=[selectedTop,selectedSide];mesh.position.y=.22;
+    $('plotId').textContent=mesh.userData.id;
+    $('plotArea').textContent=mesh.userData.areaDisplay || 'Not individually stated';
+    const dims=mesh.userData.pdfDimensionsNearby||[];
+    $('plotDimensions').innerHTML=dims.length ? dims.map((d,i)=>`<span class="source-chip">Side ${i+1}: ${d.text}</span>`).join('') : '<span class="muted">No exact side annotation could be confidently associated with this polygon.</span>';
+    const roads=mesh.userData.pdfRoadWidthsNearby||[];
+    $('plotRoadWidths').innerHTML=roads.length ? roads.map(d=>`<span class="source-chip">${d.text}</span>`).join('') : 'No nearby road-width label matched.';
+    const feats=mesh.userData.pdfFeaturesNearby||[];
+    $('plotFeatures').innerHTML=feats.length ? feats.map(d=>`<span class="source-chip">${d.text}</span>`).join('') : '—';
+    $('plotDesc').textContent=`Sector ${mesh.userData.sector} · exact plot polygon extracted from the supplied PDF.${mesh.userData.areaDisplay ? ' Area is read from the PDF text layer.' : ' This plot does not have a confidently matched individual area annotation in the source.'} Side values shown below are exact PDF text annotations spatially associated with the clicked polygon; no aspect-ratio dimensions are generated.`;
+    $('plotSearch').value=mesh.userData.id;
+    if(focus){ const [u,v]=mesh.userData.label; targetGoal.set((u-.5)*planW,0,(v-.5)*planH); radiusGoal=Math.min(radiusGoal,28); phiGoal=.70; }
+    requestRender();
+  }
+  function setHover(mesh){
+    if(mesh===hovered) return;
+    if(hovered&&hovered!==selected){hovered.material=hovered.userData.normalMaterials;hovered.position.y=0}
+    hovered=mesh;
+    if(mesh&&mesh!==selected){mesh.material=[hoverTop,hoverSide];mesh.position.y=.075;renderer.domElement.style.cursor='pointer'}
+    else renderer.domElement.style.cursor=mesh?'pointer':'grab';
+    requestRender();
+  }
+
+  // ---- Camera controller ----
+  const target=new THREE.Vector3(0,0,0),targetGoal=new THREE.Vector3(0,0,0);
+  let theta=.77,phi=.88,radius=69,thetaGoal=theta,phiGoal=phi,radiusGoal=radius;
+  function applyCamera(){
+    theta+=(thetaGoal-theta)*.13; phi+=(phiGoal-phi)*.13; radius+=(radiusGoal-radius)*.13; target.lerp(targetGoal,.13);
+    const sp=Math.sin(phi); camera.position.set(target.x+radius*sp*Math.sin(theta),target.y+radius*Math.cos(phi),target.z+radius*sp*Math.cos(theta)); camera.lookAt(target);
+    labelGroup.visible=!annotationPlane.visible && radius<115;
+    // Distance-aware label scaling keeps text comfortably readable at overview distance,
+    // yet prevents labels from becoming huge when zooming close or far away.
+    const ls=THREE.MathUtils.clamp(radius/69,.20,1.14);
+    if(Math.abs((labelGroup.userData.lastScale||0)-ls)>.015){
+      labelGroup.userData.lastScale=ls;
+      labelGroup.children.forEach(sp=>sp.scale.set(LABEL_BASE_W*ls,LABEL_BASE_H*ls,1));
+    }
+  }
+  function set3D(){thetaGoal=.77;phiGoal=.88;radiusGoal=69;targetGoal.set(0,0,0);$('view3d').classList.add('active');$('viewTop').classList.remove('active');requestRender()}
+  function setTop(){thetaGoal=0;phiGoal=.025;radiusGoal=76;targetGoal.set(0,0,0);$('viewTop').classList.add('active');$('view3d').classList.remove('active');requestRender()}
+  $('view3d').addEventListener('click',set3D); $('viewTop').addEventListener('click',setTop); $('reset').addEventListener('click',()=>{setSelected(null,false);set3D()});
+
+  // ---- Orbit + pan controller ----
+  // Default: left-drag pans the masterplan like a map. Turn Move off, or use right/Alt-drag, to orbit.
+  // Touch: one finger pans; two fingers pan + pinch zoom.
+  let moveMode=true;
+  const moveBtn=$('moveMode');
+  function syncMoveMode(){
+    moveBtn.classList.toggle('active',moveMode);
+    moveBtn.textContent=moveMode?'Move: ON':'Move';
+    renderer.domElement.style.cursor=moveMode?'move':(hovered?'pointer':'grab');
+  }
+  moveBtn.addEventListener('click',()=>{moveMode=!moveMode;syncMoveMode()});
+  renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
+
+  function panCamera(dx,dy){
+    // Convert screen-space drag to movement on the masterplan X/Z plane.
+    const h=Math.max(1,renderer.domElement.clientHeight);
+    const worldPerPixel=(2*radiusGoal*Math.tan(THREE.MathUtils.degToRad(camera.fov*.5)))/h;
+    const forward=new THREE.Vector3(); camera.getWorldDirection(forward); forward.y=0;
+    if(forward.lengthSq()<1e-8)forward.set(0,0,-1); else forward.normalize();
+    const right=new THREE.Vector3().crossVectors(forward,camera.up).normalize();
+    // Dragging the pointer moves the plan with the pointer, like a map.
+    targetGoal.addScaledVector(right,-dx*worldPerPixel);
+    targetGoal.addScaledVector(forward,dy*worldPerPixel);
+    const margin=6;
+    targetGoal.x=THREE.MathUtils.clamp(targetGoal.x,-planW*.5-margin,planW*.5+margin);
+    targetGoal.z=THREE.MathUtils.clamp(targetGoal.z,-planH*.5-margin,planH*.5+margin);
+    requestRender();
+  }
+
+  let pointerDown=false,moved=false,lastX=0,lastY=0,dragAction='orbit';
+  const activePointers=new Map();
+  let pinchDist=0,pinchMid=null;
+  renderer.domElement.addEventListener('pointerdown',e=>{
+    renderer.domElement.setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId,[e.clientX,e.clientY]);
+    pointerDown=true;moved=false;lastX=e.clientX;lastY=e.clientY;
+    dragAction=(e.button===2||e.altKey||(!moveMode&&e.button===0))?'orbit':'pan';
+    renderer.domElement.style.cursor=dragAction==='pan'?'move':'grabbing';
+  });
+  renderer.domElement.addEventListener('pointermove',e=>{
+    if(activePointers.has(e.pointerId))activePointers.set(e.pointerId,[e.clientX,e.clientY]);
+    if(activePointers.size===2){
+      const a=[...activePointers.values()];
+      const d=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);
+      const mid=[(a[0][0]+a[1][0])*.5,(a[0][1]+a[1][1])*.5];
+      if(pinchDist)radiusGoal=Math.max(1.15,radiusGoal*(pinchDist/d));
+      if(pinchMid)panCamera(mid[0]-pinchMid[0],mid[1]-pinchMid[1]);
+      pinchDist=d;pinchMid=mid;moved=true;return;
+    }
+    if(pointerDown){
+      const dx=e.clientX-lastX,dy=e.clientY-lastY;
+      if(Math.abs(dx)+Math.abs(dy)>2)moved=true;
+      if(dragAction==='pan')panCamera(dx,dy);
+      else {thetaGoal-=dx*.006;phiGoal=Math.max(.04,Math.min(1.49,phiGoal+dy*.006));requestRender();}
+      lastX=e.clientX;lastY=e.clientY;return;
+    }
+    pickHover(e);
+  });
+  renderer.domElement.addEventListener('pointerup',e=>{
+    activePointers.delete(e.pointerId);
+    if(activePointers.size<2){pinchDist=0;pinchMid=null}
+    pointerDown=activePointers.size>0;
+    if(!moved&&e.button===0)pickClick(e);
+    renderer.domElement.style.cursor=moveMode?'move':(hovered?'pointer':'grab');
+  });
+  renderer.domElement.addEventListener('pointercancel',e=>{activePointers.delete(e.pointerId);pointerDown=false;pinchDist=0;pinchMid=null});
+  renderer.domElement.addEventListener('wheel',e=>{e.preventDefault();radiusGoal=Math.max(1.15,radiusGoal*Math.exp(e.deltaY*.0012));requestRender()},{passive:false});
+  syncMoveMode();
+
+  const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();
+  function rayFromEvent(e){const r=renderer.domElement.getBoundingClientRect();mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;raycaster.setFromCamera(mouse,camera)}
+  let hoverRAF=0,lastHoverEvent=null;
+  function pickHover(e){
+    lastHoverEvent=e;
+    if(hoverRAF) return;
+    hoverRAF=requestAnimationFrame(()=>{
+      hoverRAF=0;
+      if(pointerDown||!lastHoverEvent) return;
+      rayFromEvent(lastHoverEvent);
+      const amenityHit=amenityGroup.visible ? raycaster.intersectObjects(amenityHitTargets,false)[0] : null;
+      if(amenityHit){ setHover(null); renderer.domElement.style.cursor='pointer'; return; }
+      const hit=raycaster.intersectObjects(plots,false)[0];
+      setHover(hit?hit.object:null);
+    });
+  }
+  function pickClick(e){
+    rayFromEvent(e);
+    if(amenityGroup.visible){
+      const amenityHit=raycaster.intersectObjects(amenityHitTargets,false)[0];
+      if(amenityHit && amenityHit.object.userData.amenityInfo){ setSelectedAmenity(amenityHit.object.userData.amenityInfo,true); return; }
+    }
+    const hit=raycaster.intersectObjects(plots,false)[0];
+    if(hit)setSelected(hit.object,true);
+  }
+
+  function findPlot(){const q=$('plotSearch').value.trim().toUpperCase();if(!q)return;const found=byId.get(q);if(found&&found.length){setSelected(found[found.length-1],true);$('plotSearch').setCustomValidity('')}else{$('plotSearch').setCustomValidity('Plot ID not found in extracted PDF geometry');$('plotSearch').reportValidity()}}
+  $('findPlot').addEventListener('click',findPlot); $('plotSearch').addEventListener('keydown',e=>{if(e.key==='Enter')findPlot()}); $('plotSearch').addEventListener('input',e=>e.currentTarget.setCustomValidity(''));
+  function toggle(btn,obj){obj.visible=!obj.visible;btn.classList.toggle('active',obj.visible);requestRender()}
+  $('togglePlan').addEventListener('click',()=>toggle($('togglePlan'),plan));
+  $('toggleAnnotations').addEventListener('click',()=>{
+    annotationPlane.visible=!annotationPlane.visible;
+    $('toggleAnnotations').classList.toggle('active',annotationPlane.visible);
+    // Avoid duplicate text: exact PDF overlay and clean 3D plot labels are mutually exclusive.
+    planMat.opacity=annotationPlane.visible?EXACT_PLAN_OPACITY:CLEAN_PLAN_OPACITY;
+    labelGroup.visible=!annotationPlane.visible && radius<115;
+    requestRender();
+  });
+  $('toggleRoads').addEventListener('click',()=>toggle($('toggleRoads'),roadGroup));
+  $('togglePlots').addEventListener('click',()=>toggle($('togglePlots'),plotGroup));
+  $('toggleBase').addEventListener('click',()=>{slab.visible=!slab.visible;lip.visible=slab.visible;$('toggleBase').classList.toggle('active',slab.visible);requestRender()});
+  $('toggleTrees').addEventListener('click',()=>toggle($('toggleTrees'),landscapeGroup));
+  $('toggleLights').addEventListener('click',()=>toggle($('toggleLights'),streetLightGroup));
+  $('toggleAmenities').addEventListener('click',()=>{amenityGroup.visible=!amenityGroup.visible;entranceGroup.visible=amenityGroup.visible;$('toggleAmenities').classList.toggle('active',amenityGroup.visible);requestRender()});
+
+  // Day / dusk / night visual modes. Geometry remains unchanged; only atmosphere and emissive lighting change.
+  let visualMode='dusk';
+  function setVisualMode(mode){
+    visualMode=mode;
+    const isDay=mode==='day', isNight=mode==='night';
+    scene.background.set(isDay?0x5b765f:isNight?0x050b09:0x111b15);
+    scene.fog.color.set(isDay?0x617764:isNight?0x07100d:0x17231a);
+    scene.fog.density=isDay?.0032:isNight?.0061:.0046;
+    renderer.toneMappingExposure=isDay?1.22:isNight?.64:.98;
+    sun.intensity=isDay?3.6:isNight?.18:2.25;
+    hemi.intensity=isDay?2.05:isNight?.34:1.35;
+    fill.intensity=isDay?.62:isNight?.16:.48;
+    warm.intensity=isDay?4:isNight?32:22;
+    bulbMat.emissiveIntensity=isDay?.35:isNight?4.5:2.1;
+    clubGlowMat.emissiveIntensity=isDay?.18:isNight?3.2:1.7;
+    glassMat.emissiveIntensity=isDay?.05:isNight?.52:.25;
+    waterMat.emissiveIntensity=isDay?.08:isNight?.55:.32;
+    streetPointLights.forEach(l=>l.intensity=isDay?0:isNight?2.2:.68);
+    for(const id of ['modeDay','modeDusk','modeNight']) $(id).classList.remove('active');
+    $('mode'+mode[0].toUpperCase()+mode.slice(1)).classList.add('active');
+    requestRender();
+  }
+  $('modeDay').addEventListener('click',()=>setVisualMode('day'));
+  $('modeDusk').addEventListener('click',()=>setVisualMode('dusk'));
+  $('modeNight').addEventListener('click',()=>setVisualMode('night'));
+  setVisualMode('dusk');
+
+  function resize(){const w=Math.max(1,host.clientWidth),h=Math.max(1,host.clientHeight);renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();requestRender()}
+  new ResizeObserver(resize).observe(host); resize(); applyCamera(); renderer.render(scene,camera);
+  fallback.classList.add('hide'); loading.style.display='none';
+  var renderQueued=false;
+  function cameraStillMoving(){
+    return Math.abs(thetaGoal-theta)>.0003 || Math.abs(phiGoal-phi)>.0003 || Math.abs(radiusGoal-radius)>.003 || target.distanceToSquared(targetGoal)>.000003;
+  }
+  function requestRender(){
+    if(renderQueued) return;
+    renderQueued=true;
+    requestAnimationFrame(function frame(){
+      renderQueued=false;
+      applyCamera();
+      renderer.render(scene,camera);
+      if(cameraStillMoving()) requestRender();
+    });
+  }
+  requestRender();
+} catch(err){ console.error(err); fail(err.message||String(err)); }
